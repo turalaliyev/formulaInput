@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useEffect, useMemo } from "react";
 import { Button, AutoComplete, message, Dropdown, Menu } from "antd";
 import { DownOutlined } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
-import { create } from "zustand";
+import { useFormulaStore } from "../store/formulaStore";
 
 interface Variable {
   id: number;
@@ -10,69 +10,25 @@ interface Variable {
   value: number;
 }
 
-interface FormulaState {
-  formula: string;
-  result: number | null;
-  setFormula: (formula: string) => void;
-  setResult: (result: number | null) => void;
-}
-
-const useFormulaStore = create<FormulaState>((set) => ({
-  formula: "",
-  result: null,
-  setFormula: (formula) => set({ formula }),
-  setResult: (result) => set({ result }),
-}));
-
-const fetchVariables = async (): Promise<Variable[]> => {
-  const response = await fetch(
-    "https://652f91320b8d8ddac0b2b62b.mockapi.io/autocomplete"
-  );
-  if (!response.ok) throw new Error("Error fetching variables!");
-  return response.json();
-};
-
 const FormulaInput: React.FC = () => {
   const { formula, result, setFormula, setResult } = useFormulaStore();
-  const { data: variables = [] } = useQuery({
+
+  const { data: variables, error } = useQuery<Variable[]>({
     queryKey: ["variables"],
-    queryFn: fetchVariables,
+    queryFn: async () => {
+      const response = await fetch(
+        "https://652f91320b8d8ddac0b2b62b.mockapi.io/autocomplete"
+      );
+      if (!response.ok) throw new Error("Network error");
+      return response.json();
+    },
   });
 
-  const evaluateFormula = () => {
-    let substitutedFormula = formula;
-
-    variables.forEach((variable) => {
-      const regex = new RegExp(`\\[${variable.name}\\]`, "g");
-      substitutedFormula = substitutedFormula.replace(
-        regex,
-        variable.value.toString()
-      );
-    });
-
-    substitutedFormula = substitutedFormula.replace(/\^/g, "**");
-
-    try {
-      const evalResult = Function("return " + substitutedFormula)();
-      if (typeof evalResult === "number") {
-        setResult(evalResult);
-      } else {
-        message.error("Invalid formula!");
-      }
-    } catch (error) {
-      console.log(error);
-      message.error("Error evaluating the formula!");
-    }
-  };
-
-  const handleInputChange = (value: string) => {
-    setFormula(value);
-    updateAutoCompleteOptions(value);
-  };
-
-  const updateAutoCompleteOptions = (value: string) => {
-    const match = value.match(/(\w+)$/);
+  const options = useMemo(() => {
+    const match = formula.match(/(\w+)$/);
     const searchTerm = match ? match[1] : "";
+    if (!searchTerm || !variables) return [];
+
     return variables
       .filter((variable) =>
         variable.name.toLowerCase().includes(searchTerm.toLowerCase())
@@ -81,6 +37,44 @@ const FormulaInput: React.FC = () => {
         value: variable.name,
         label: `${variable.name} = ${variable.value}`,
       }));
+  }, [formula, variables]);
+
+  useEffect(() => {
+    if (error) message.error("Error fetching variables!");
+  }, [error]);
+
+  const evaluateFormula = () => {
+    if (!variables) {
+      message.error("Variables not loaded yet");
+      return;
+    }
+
+    let substitutedFormula = formula;
+    variables.forEach((variable) => {
+      substitutedFormula = substitutedFormula.replace(
+        new RegExp(`\\[${variable.name}\\]`, "g"),
+        variable.value.toString()
+      );
+    });
+
+    try {
+      const evalResult = Function(
+        "return " + substitutedFormula.replace(/\^/g, "**")
+      )();
+      if (typeof evalResult === "number") {
+        setResult(evalResult);
+      } else {
+        message.error("Invalid formula!");
+      }
+    } catch (error) {
+      console.log(error);
+
+      message.error("Error evaluating formula!");
+    }
+  };
+
+  const handleInputChange = (value: string) => {
+    setFormula(value);
   };
 
   const handleSelect = (selectedValue: string) => {
@@ -96,7 +90,9 @@ const FormulaInput: React.FC = () => {
         break;
       }
     }
-    setFormula(parts.join(""));
+
+    newFormula = parts.join("");
+    setFormula(newFormula);
   };
 
   const handleKeyPress = (event: React.KeyboardEvent) => {
@@ -107,15 +103,21 @@ const FormulaInput: React.FC = () => {
 
   const handleMenuClick = (e: any, currentTag: string) => {
     const selectedVariable = e.key;
-    setFormula(formula.replace(`[${currentTag}]`, `[${selectedVariable}]`));
+    const updatedFormula = formula.replace(
+      `[${currentTag}]`,
+      `[${selectedVariable}]`
+    );
+    setFormula(updatedFormula);
   };
 
   const renderTagWithDropdown = (tag: string) => {
     const usedVariables =
       formula.match(/\[([^\]]+)\]/g)?.map((item) => item.slice(1, -1)) || [];
     const availableVariables = variables
-      .filter((variable) => !usedVariables.includes(variable.name))
-      .map((variable) => variable.name);
+      ? variables
+          .filter((variable) => !usedVariables.includes(variable.name))
+          .map((variable) => variable.name)
+      : [];
 
     const menu = (
       <Menu onClick={(e) => handleMenuClick(e, tag)}>
@@ -177,10 +179,9 @@ const FormulaInput: React.FC = () => {
         value={formula}
         onChange={handleInputChange}
         onSelect={handleSelect}
-        onSearch={updateAutoCompleteOptions}
         onKeyDown={handleKeyPress}
         style={{ width: "100%", marginTop: "10px" }}
-        options={updateAutoCompleteOptions(formula)}
+        options={options}
         placeholder="Enter formula (e.g., [name1] + [name2])"
       />
       <Button
